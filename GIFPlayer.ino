@@ -1,9 +1,17 @@
 /// <summary>
-/// LOCKED 30 FPS ESP32-S3 GIF PLAYER.
-/// - Limits framerate to 30 FPS to prevent "too fast" playback.
-/// - Reduces tearing by syncing frame timing.
-/// - Retains Retro Scanline aesthetic.
+/// HIGH-PERFORMANCE ESP32-S3 GIF PLAYER (RETRO EDITION)
+/// ----------------------------------------------------
+/// Features:
+/// 1. Hardware SPI @ 80MHz: Maximum throughput for ILI9341.
+/// 2. Zero-Copy Rendering: Uses PSRAM/RAM to store GIF, eliminating FS lag.
+/// 3. Retro Scanline Effect: Skips odd lines for 2x FPS boost and CRT aesthetic.
+/// 4. Smart Transparency: Prevents artifacts by skipping transparent pixels.
+/// 5. FPS Lock: Caps playback at 30 FPS for consistent timing and reduced tearing.
+/// 
+/// Hardware: ESP32-S3 (PSRAM Recommended), ILI9341 Display.
+/// Libraries: Adafruit_GFX, Adafruit_ILI9341, AnimatedGIF.
 /// </summary>
+
 #include <SPI.h>
 #include <FS.h>
 #include <LittleFS.h>
@@ -11,10 +19,11 @@
 #include <Adafruit_ILI9341.h>
 #include <AnimatedGIF.h>
 
-// --- AYARLAR ---
-#define TARGET_FPS 60               // Sabit FPS Hedefi
-#define FRAME_DELAY (1000 / TARGET_FPS) // Kare başına düşen milisaniye (33ms)
+// --- CONFIGURATION ---
+#define TARGET_FPS 30               
+#define FRAME_DELAY (1000 / TARGET_FPS) // Target ~33ms per frame
 
+// --- PIN DEFINITIONS (ESP32-S3) ---
 static const int PIN_MOSI = 11;
 static const int PIN_MISO = 13;
 static const int PIN_SCK  = 12;
@@ -54,7 +63,7 @@ void GIFDraw(GIFDRAW *pDraw)
   if (x + w > tft.width()) w = tft.width() - x;
   if (w <= 0) return;
 
-  // RETRO SCANLINE: Tek satırları atla (Hız + Estetik)
+  // RETRO SCANLINE: Skip odd lines (Speed Boost + Aesthetic)
   if (y & 1) return;
 
   uint8_t *src = pDraw->pPixels;
@@ -103,7 +112,7 @@ void GIFDraw(GIFDRAW *pDraw)
   tft.endWrite();
 }
 
-void Die(const char *msg)
+void FatalError(const char *msg)
 {
   tft.fillScreen(ILI9341_RED);
   tft.setCursor(0, 0);
@@ -120,30 +129,32 @@ void setup()
   pinMode(PIN_BLK, OUTPUT);
   digitalWrite(PIN_BLK, HIGH);
 
-  // Hardware SPI Başlat
+  // Initialize Hardware SPI
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
 
+  // Overclock SPI to 80MHz
   tft.begin(80000000);
   tft.setRotation(0);
   tft.fillScreen(ILI9341_BLACK);
 
-  if (!LittleFS.begin(true)) Die("FS ERROR");
+  if (!LittleFS.begin(true)) FatalError("FS FAIL");
 
   File f = LittleFS.open(GIF_PATH, "r");
-  if (!f) Die("NO FILE");
+  if (!f) FatalError("NO FILE");
 
   gifSize = f.size();
   
+  // Try PSRAM first, fallback to Heap
   gifData = (uint8_t *)ps_malloc(gifSize);
   if (!gifData) gifData = (uint8_t *)malloc(gifSize);
-  if (!gifData) Die("NO RAM");
+  if (!gifData) FatalError("NO RAM");
 
   f.read(gifData, gifSize);
   f.close();
 
   gif.begin(LITTLE_ENDIAN_PIXELS);
 
-  if (!gif.open(gifData, gifSize, GIFDraw)) Die("GIF ERR");
+  if (!gif.open(gifData, gifSize, GIFDraw)) FatalError("GIF ERR");
   
   gif.setDrawType(GIF_DRAW_RAW);
   gif.allocFrameBuf(GIFAlloc);
@@ -151,8 +162,7 @@ void setup()
 
 void loop()
 {
-  // Başlangıç zamanını tut
-  uint32_t startParams = millis();
+  uint32_t frameStart = millis();
   
   int delayMs = 0; 
   int result = gif.playFrame(false, &delayMs);
@@ -162,14 +172,11 @@ void loop()
     gif.reset();
   }
 
-  // İşlem süresini hesapla
-  uint32_t processingTime = millis() - startParams;
+  // FPS Lock Logic
+  uint32_t processingTime = millis() - frameStart;
   
-  // Eğer işlem hedef süreden (33ms) kısa sürdüyse, aradaki fark kadar bekle
   if (processingTime < FRAME_DELAY)
   {
     delay(FRAME_DELAY - processingTime);
   }
-  
-  // Eğer işlem zaten 33ms'den uzun sürdüyse bekleme yapma (Drop frame olmasın diye devam et)
 }
